@@ -12,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.myapplication.databinding.ActivityBleDemoBinding
 import com.example.myapplication.repository.DeviceRepository
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -175,14 +176,17 @@ class BleDemoActivity : AppCompatActivity() {
 
         // 连接成功后订阅 Notify
         if (state == ConnectionState.CONNECTED) {
-            repository.subscribeAudioStream()
             repository.subscribeCommandNotify()
+            repository.subscribeAudioStream()
             appendLog("已连接设备: ${bleManager.getConnectedDeviceName()}")
 
-            // 查询设备信息
-            repository.queryBattery()
-            repository.queryStorage()
-            repository.queryFirmwareVersion()
+            lifecycleScope.launch {
+                delay(1200)
+                appendLog("查询设备信息...")
+                repository.queryBattery()
+                repository.queryStorage()
+                repository.queryFirmwareVersion()
+            }
         }
     }
 
@@ -192,7 +196,7 @@ class BleDemoActivity : AppCompatActivity() {
         binding.tvDeviceName.text = "设备: ${state.deviceName}"
         binding.tvMacAddress.text = "MAC: ${state.macAddress}"
         binding.tvBattery.text = "电量: ${if (state.battery >= 0) "${state.battery}%" else "未知"}"
-        binding.tvStorage.text = "存储: ${if (state.freeStorage >= 0) "${state.freeStorage}/${state.totalStorage} MB" else "未知"}"
+        binding.tvStorage.text = "存储: ${formatStorage(state.freeStorage, state.totalStorage)}"
         binding.tvFirmware.text = "固件: ${state.firmwareVersion.ifEmpty { "未知" }}"
 
         // 录音状态
@@ -207,6 +211,22 @@ class BleDemoActivity : AppCompatActivity() {
         state.lastError?.let { error ->
             Toast.makeText(this, error, Toast.LENGTH_SHORT).show()
             repository.clearError()
+        }
+    }
+
+    private fun formatStorage(freeStorageMb: Int, totalStorageMb: Int): String {
+        if (freeStorageMb < 0 || totalStorageMb < 0) {
+            return "未知"
+        }
+
+        return "${formatStorageSize(freeStorageMb)} / ${formatStorageSize(totalStorageMb)}"
+    }
+
+    private fun formatStorageSize(sizeMb: Int): String {
+        return if (sizeMb >= 1024) {
+            String.format(Locale.getDefault(), "%.2f GB", sizeMb / 1024.0)
+        } else {
+            "$sizeMb MB"
         }
     }
 

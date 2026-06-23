@@ -16,6 +16,11 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 
+data class NotifyPacket(
+    val characteristicUuid: UUID,
+    val data: ByteArray
+)
+
 /**
  * BLE 蓝牙管理器
  *
@@ -53,6 +58,10 @@ class BleManager(private val context: Context) {
 
     private var scanTargetDeviceName: String? = null
 
+    private val pendingNotifyDescriptors = ArrayDeque<BluetoothGattDescriptor>()
+
+    private var isWritingNotifyDescriptor = false
+
     // ==================== 状态暴露 ====================
 
     /** 连接状态 */
@@ -66,6 +75,14 @@ class BleManager(private val context: Context) {
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val receivedData: SharedFlow<ByteArray> = _receivedData
+
+    /** 按特征值区分后的 Notify 数据 */
+    private val _notifyPackets = MutableSharedFlow<NotifyPacket>(
+        replay = 0,
+        extraBufferCapacity = 128,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val notifyPackets: SharedFlow<NotifyPacket> = _notifyPackets
 
     /** 扫描到的设备列表 */
     private val _scannedDevices = MutableSharedFlow<BluetoothDevice>(
@@ -316,6 +333,8 @@ class BleManager(private val context: Context) {
         bluetoothGatt?.disconnect()
         bluetoothGatt?.close()
         bluetoothGatt = null
+        pendingNotifyDescriptors.clear()
+        isWritingNotifyDescriptor = false
         _connectionState.value = ConnectionState.DISCONNECTED
         _mtu.value = 20
         JxdLogger.d(TAG, "断开连接")
@@ -382,11 +401,17 @@ class BleManager(private val context: Context) {
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
         ) {
-            // 收到 Notify 数据
             characteristic.value?.let { data ->
-                JxdLogger.d(TAG, "收到数据: ${data.size} 字节")
-                _receivedData.tryEmit(data)
+                handleNotifyData(characteristic.uuid, data)
             }
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            handleNotifyData(characteristic.uuid, value)
         }
 
         override fun onCharacteristicRead(
@@ -412,6 +437,27 @@ class BleManager(private val context: Context) {
                 JxdLogger.e(TAG, "写入失败: $status")
             }
         }
+
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                JxdLogger.d(TAG, "Notify 描述符写入成功: ${descriptor.characteristic.uuid}")
+            } else {
+                JxdLogger.e(TAG, "Notify 描述符写入失败: ${descriptor.characteristic.uuid}, status=$status")
+            }
+            isWritingNotifyDescriptor = false
+            writeNextNotifyDescriptor(gatt)
+        }
+    }
+
+    private fun handleNotifyData(characteristicUuid: UUID, data: ByteArray) {
+        val packet = data.copyOf()
+        JxdLogger.d(TAG, "收到 Notify: $characteristicUuid, ${packet.size} 字节")
+        _receivedData.tryEmit(packet)
+        _notifyPackets.tryEmit(NotifyPacket(characteristicUuid, packet))
     }
 
     // ==================== MTU 协商 ====================
@@ -433,6 +479,8 @@ class BleManager(private val context: Context) {
         if (bluetoothGatt == gatt) {
             bluetoothGatt = null
         }
+        pendingNotifyDescriptors.clear()
+        isWritingNotifyDescriptor = false
         _mtu.value = 20
     }
 
@@ -489,12 +537,33 @@ class BleManager(private val context: Context) {
         val descriptor = characteristic.getDescriptor(
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         )
-        descriptor?.let {
-            it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            gatt.writeDescriptor(it)
+        if (descriptor == null) {
+            JxdLogger.e(TAG, "未找到 CCCD 描述符: $charUUID")
+            return
         }
 
-        JxdLogger.d(TAG, "已订阅 Notify: $charUUID")
+        pendingNotifyDescriptors.add(descriptor)
+        writeNextNotifyDescriptor(gatt)
+
+        JxdLogger.d(TAG, "已请求订阅 Notify: $charUUID")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeNextNotifyDescriptor(gatt: BluetoothGatt? = bluetoothGatt) {
+        val activeGatt = gatt ?: return
+        if (isWritingNotifyDescriptor) return
+
+        val descriptor = pendingNotifyDescriptors.removeFirstOrNull() ?: return
+        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        val started = activeGatt.writeDescriptor(descriptor)
+        isWritingNotifyDescriptor = started
+
+        if (started) {
+            JxdLogger.d(TAG, "正在写入 Notify 描述符: ${descriptor.characteristic.uuid}")
+        } else {
+            JxdLogger.e(TAG, "启动 Notify 描述符写入失败: ${descriptor.characteristic.uuid}")
+            writeNextNotifyDescriptor(activeGatt)
+        }
     }
 
     /**

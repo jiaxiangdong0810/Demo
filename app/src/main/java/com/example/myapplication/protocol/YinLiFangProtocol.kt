@@ -29,8 +29,14 @@ object YinLiFangProtocol {
     /** APP 发送指令前缀 */
     const val APP_CMD_PREFIX = "YWT_BLE&"
 
+    /** 部分固件使用的短指令前缀 */
+    const val SHORT_APP_CMD_PREFIX = "BLE&"
+
     /** 设备响应前缀 */
-    const val DEV_RSP_PREFIX = "YWT_DEV&"
+    const val DEV_RSP_PREFIX = "DEV&"
+
+    /** 文档中的设备响应前缀 */
+    const val DOCUMENT_DEV_RSP_PREFIX = "YWT_DEV&"
 
     // ==================== 录音控制指令 ====================
 
@@ -123,100 +129,120 @@ object YinLiFangProtocol {
     // ==================== 响应关键字 ====================
 
     /** 录音状态响应 */
-    const val RSP_STATUS = "YWT_DEV&STE&"
+    const val RSP_STATUS = "DEV&STE&"
 
     /** 开始录音响应 */
-    const val RSP_START_RECORD = "YWT_DEV&STA&"
+    const val RSP_START_RECORD = "DEV&STA&"
 
     /** 停止录音响应 */
-    const val RSP_STOP_RECORD = "YWT_DEV&STO"
+    const val RSP_STOP_RECORD = "DEV&STO"
 
     /** 录音过程中状态推送 */
-    const val RSP_RECORDING = "YWT_DEV&RT&"
+    const val RSP_RECORDING = "DEV&RT&"
 
     /** 录音错误 */
-    const val RSP_RECORD_ERROR = "YWT_DEV&REC&ERR"
+    const val RSP_RECORD_ERROR = "DEV&REC&ERR"
 
     /** 存储已满 */
-    const val RSP_DISK_FULL = "YWT_DEV&DISK&ERR"
+    const val RSP_DISK_FULL = "DEV&DISK&ERR"
 
     /** 电量响应 */
-    const val RSP_BATTERY = "YWT_DEV&BAT&"
+    const val RSP_BATTERY = "DEV&BAT&"
 
     /** 存储容量响应 */
-    const val RSP_STORAGE = "YWT_DEV&SPA&"
+    const val RSP_STORAGE = "DEV&SPA&"
 
     /** 固件版本响应 */
-    const val RSP_FW_VERSION = "YWT_DEV&FW&"
+    const val RSP_FW_VERSION = "DEV&FW&"
 
     /** WiFi 版本响应 */
-    const val RSP_WIFI_VERSION = "YWT_DEV&WF&"
+    const val RSP_WIFI_VERSION = "DEV&WF&"
 
     /** MAC 地址响应 */
-    const val RSP_MAC = "YWT_DEV&MAC&"
+    const val RSP_MAC = "DEV&MAC&"
 
     /** 时间设置成功响应 */
-    const val RSP_TIME_SET_OK = "YWT_DEV&T&OK"
+    const val RSP_TIME_SET_OK = "DEV&T&OK"
 
     /** 当前时间响应 */
-    const val RSP_CURRENT_TIME = "YWT_DEV&CT&"
+    const val RSP_CURRENT_TIME = "DEV&CT&"
 
     /** 文件夹列表响应 */
-    const val RSP_DIR = "YWT_DEV&DIRS&"
+    const val RSP_DIR = "DEV&DIRS&"
 
     /** 文件夹列表结束响应 */
-    const val RSP_DIR_SUM = "YWT_DEV&DIRS_SUM&"
+    const val RSP_DIR_SUM = "DEV&DIRS_SUM&"
 
     /** 文件列表响应 */
-    const val RSP_FILE = "YWT_DEV&F&"
+    const val RSP_FILE = "DEV&F&"
 
     /** 文件列表结束响应 */
-    const val RSP_FILE_LIST_END = "YWT_DEV&LIST&"
+    const val RSP_FILE_LIST_END = "DEV&LIST&"
 
     /** 删除文件成功响应 */
-    const val RSP_DELETE_OK = "YWT_DEV&D"
+    const val RSP_DELETE_OK = "DEV&D"
 
     /** 删除文件失败响应 */
-    const val RSP_DELETE_ERROR = "YWT_DEV&D&ERR"
+    const val RSP_DELETE_ERROR = "DEV&D&ERR"
 
     /** BLE 同步文件大小响应 */
-    const val RSP_BLE_SYNC_SIZE = "YWT_DEV&U&"
+    const val RSP_BLE_SYNC_SIZE = "DEV&U&"
 
     /** WiFi 同步文件大小响应 */
-    const val RSP_WIFI_SYNC_SIZE = "YWT_DEV&W&"
+    const val RSP_WIFI_SYNC_SIZE = "DEV&W&"
 
     /** 文件传输完成 */
-    const val RSP_TRANSFER_DONE = "YWT_DEV&OFF"
+    const val RSP_TRANSFER_DONE = "DEV&OFF"
 
     /** 文件传输错误 */
-    const val RSP_TRANSFER_ERROR = "YWT_DEV&U&ERR"
+    const val RSP_TRANSFER_ERROR = "DEV&U&ERR"
 
     /** 中断传输确认 */
-    const val RSP_STOP_TRANSFER = "YWT_DEV&SHUT"
+    const val RSP_STOP_TRANSFER = "DEV&SHUT"
 
     /** WiFi 已开启响应 */
-    const val RSP_WIFI_ON = "YWT_DEV&WIFIO"
+    const val RSP_WIFI_ON = "DEV&WIFIO"
 
     /** WiFi 已关闭响应 */
-    const val RSP_WIFI_OFF = "YWT_DEV&WIFIC"
+    const val RSP_WIFI_OFF = "DEV&WIFIC"
 
     /** WiFi 信息响应 */
-    const val RSP_WIFI_INFO = "YWT_DEV&WIFI&"
+    const val RSP_WIFI_INFO = "DEV&WIFI&"
 
     /** WiFi 状态响应 */
-    const val RSP_WIFI_STATUS = "YWT_DEV&WIFIS&"
+    const val RSP_WIFI_STATUS = "DEV&WIFIS&"
 
     /** 密钥配对成功 */
-    const val RSP_BIND_OK = "YWT_DEV&SK&OK"
+    const val RSP_BIND_OK = "DEV&SK&OK"
 
     /** 密钥配对失败 */
-    const val RSP_BIND_ERROR = "YWT_DEV&SK&ERR"
+    const val RSP_BIND_ERROR = "DEV&SK&ERR"
 
     /** 录音模式 - 通话模式 */
-    const val RSP_REC_MODE_CALL = "YWT_DEV&REC&CALL"
+    const val RSP_REC_MODE_CALL = "DEV&REC&CALL"
 
     /** 录音模式 - 对话模式 */
-    const val RSP_REC_MODE_CONVERSATION = "YWT_DEV&REC&CON"
+    const val RSP_REC_MODE_CONVERSATION = "DEV&REC&CON"
+
+    /** 未知指令响应 */
+    const val RSP_UNKNOWN = "DEV&UNKNOWN"
+
+    fun toShortCommand(command: String): String {
+        return if (command.startsWith(APP_CMD_PREFIX)) {
+            SHORT_APP_CMD_PREFIX + command.removePrefix(APP_CMD_PREFIX)
+        } else {
+            command
+        }
+    }
+
+    fun normalizeResponse(response: String): String {
+        val clean = response.trim().trimEnd('\u0000')
+        return if (clean.startsWith(DOCUMENT_DEV_RSP_PREFIX)) {
+            DEV_RSP_PREFIX + clean.removePrefix(DOCUMENT_DEV_RSP_PREFIX)
+        } else {
+            clean
+        }
+    }
 
     // ==================== WiFi 状态码 ====================
 

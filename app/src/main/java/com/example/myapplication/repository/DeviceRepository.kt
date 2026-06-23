@@ -31,6 +31,10 @@ class DeviceRepository(private val bleManager: BleManager) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    private var useShortCommandPrefix = false
+
+    private var lastDocumentCommand: String? = null
+
     // ==================== 状态暴露 ====================
 
     /** 设备状态 */
@@ -69,10 +73,14 @@ class DeviceRepository(private val bleManager: BleManager) {
             }
         }
 
-        // 监听接收到的数据并解析
+        // 监听 Notify 数据：指令和音频必须按不同特征值分开处理
         scope.launch {
-            bleManager.receivedData.collect { data ->
-                parseResponse(data)
+            bleManager.notifyPackets.collect { packet ->
+                when (packet.characteristicUuid) {
+                    YinLiFangProtocol.COMMAND_NOTIFY_UUID -> parseResponse(packet.data)
+                    YinLiFangProtocol.AUDIO_NOTIFY_UUID -> _audioStream.tryEmit(packet.data)
+                    else -> JxdLogger.d(TAG, "未知 Notify: ${packet.characteristicUuid}")
+                }
             }
         }
     }
@@ -220,13 +228,19 @@ class DeviceRepository(private val bleManager: BleManager) {
      * 发送自定义指令
      */
     fun sendCommand(cmd: String) {
-        val data = cmd.toByteArray()
+        lastDocumentCommand = cmd
+        val actualCommand = if (useShortCommandPrefix) {
+            YinLiFangProtocol.toShortCommand(cmd)
+        } else {
+            cmd
+        }
+        val data = actualCommand.toByteArray()
         bleManager.writeData(
             YinLiFangProtocol.SERVICE_UUID,
             YinLiFangProtocol.WRITE_UUID,
             data
         )
-        JxdLogger.d(TAG, "发送指令: $cmd")
+        JxdLogger.d(TAG, "发送指令: $actualCommand")
     }
 
     // ==================== 协议解析 ====================
@@ -237,11 +251,17 @@ class DeviceRepository(private val bleManager: BleManager) {
      * 根据响应前缀分发到不同的处理器
      */
     private fun parseResponse(data: ByteArray) {
-        val response = String(data, Charsets.UTF_8)
+        val rawResponse = String(data, Charsets.UTF_8)
+        val response = YinLiFangProtocol.normalizeResponse(rawResponse)
         JxdLogger.d(TAG, "收到响应: $response")
 
         // 发送到指令响应流
         _commandResponse.tryEmit(response)
+
+        if (response == YinLiFangProtocol.RSP_UNKNOWN && !useShortCommandPrefix) {
+            retryLastCommandWithShortPrefix()
+            return
+        }
 
         when {
             // 录音状态响应
@@ -326,8 +346,19 @@ class DeviceRepository(private val bleManager: BleManager) {
             // 其他响应
             else -> {
                 JxdLogger.d(TAG, "未处理的响应: $response")
+            }
         }
     }
+
+    private fun retryLastCommandWithShortPrefix() {
+        val lastCommand = lastDocumentCommand ?: return
+        val retryCommand = YinLiFangProtocol.toShortCommand(lastCommand)
+        if (retryCommand == lastCommand) return
+
+        useShortCommandPrefix = true
+        JxdLogger.w(TAG, "设备不识别文档长前缀，切换短前缀重试: $retryCommand")
+        _commandResponse.tryEmit("设备使用短协议，重试: $retryCommand")
+        sendCommand(lastCommand)
     }
 
     /**
