@@ -37,6 +37,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".ble.RealtimeRecordingActivity"
+            android:exported="false"
+            android:label="实时录音"
+            android:theme="@style/Theme.MyApplication" />
     </application>
 
 </manifest>

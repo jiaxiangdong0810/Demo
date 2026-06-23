@@ -12,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.myapplication.databinding.ActivityBleDemoBinding
 import com.example.myapplication.repository.DeviceRepository
+import com.example.myapplication.repository.DeviceSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -48,8 +49,8 @@ class BleDemoActivity : AppCompatActivity() {
     // ==================== 初始化 ====================
 
     private fun initBle() {
-        bleManager = BleManager(this)
-        repository = DeviceRepository(bleManager)
+        bleManager = DeviceSession.bleManager(this)
+        repository = DeviceSession.repository(this)
     }
 
     private fun initPermission() {
@@ -81,9 +82,11 @@ class BleDemoActivity : AppCompatActivity() {
         // 录音控制按钮
         binding.btnRecord.setOnClickListener {
             if (repository.deviceState.value.isRecording) {
-                repository.stopRecording()
+                startActivity(Intent(this, RealtimeRecordingActivity::class.java))
             } else {
+                repository.beginRealtimeCapture()
                 repository.startRecording()
+                startActivity(Intent(this, RealtimeRecordingActivity::class.java))
             }
         }
 
@@ -331,6 +334,5 @@ class BleDemoActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         bleManager.stopScan()
-        repository.disconnect()
     }
 }

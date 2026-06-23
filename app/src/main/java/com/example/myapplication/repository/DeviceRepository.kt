@@ -1,6 +1,8 @@
 package com.example.myapplication.repository
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.os.Environment
 import com.example.myapplication.ble.BleManager
 import com.example.myapplication.ble.ConnectionState
 import com.example.myapplication.protocol.YinLiFangProtocol
@@ -10,6 +12,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 
 /**
  * 设备业务仓库
@@ -23,17 +28,24 @@ import kotlinx.coroutines.launch
  * 3. 指令响应（001120a3 端口）→ commandResponse + 更新 deviceState
  * 4. 上层只需调方法，不需要知道 UUID 和协议格式
  */
-class DeviceRepository(private val bleManager: BleManager) {
+class DeviceRepository(
+    private val bleManager: BleManager,
+    context: Context
+) {
 
     companion object {
         private const val TAG = "DeviceRepository"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val appContext = context.applicationContext
 
     private var useShortCommandPrefix = false
 
     private var lastDocumentCommand: String? = null
+    private var recordingOutputStream: FileOutputStream? = null
+    private var bytesInRateWindow = 0L
+    private var rateWindowStartMillis = 0L
 
     // ==================== 状态暴露 ====================
 
@@ -57,6 +69,11 @@ class DeviceRepository(private val bleManager: BleManager) {
     )
     val commandResponse: SharedFlow<String> = _commandResponse
 
+    /** 当前实时录音接收状态 */
+    private val _realtimeRecordingState = MutableStateFlow(RealtimeRecordingState())
+    val realtimeRecordingState: StateFlow<RealtimeRecordingState> =
+        _realtimeRecordingState.asStateFlow()
+
     /** 扫描到的设备列表 */
     val scannedDevices = bleManager.scannedDevices
 
@@ -70,6 +87,12 @@ class DeviceRepository(private val bleManager: BleManager) {
         scope.launch {
             bleManager.connectionState.collect { state ->
                 _deviceState.update { it.copy(connectionState = state) }
+                if (
+                    (state == ConnectionState.DISCONNECTED || state == ConnectionState.FAILED) &&
+                    _realtimeRecordingState.value.isCapturing
+                ) {
+                    stopRealtimeCapture("蓝牙连接已断开")
+                }
             }
         }
 
@@ -78,7 +101,10 @@ class DeviceRepository(private val bleManager: BleManager) {
             bleManager.notifyPackets.collect { packet ->
                 when (packet.characteristicUuid) {
                     YinLiFangProtocol.COMMAND_NOTIFY_UUID -> parseResponse(packet.data)
-                    YinLiFangProtocol.AUDIO_NOTIFY_UUID -> _audioStream.tryEmit(packet.data)
+                    YinLiFangProtocol.AUDIO_NOTIFY_UUID -> {
+                        handleAudioPacket(packet.data)
+                        _audioStream.tryEmit(packet.data)
+                    }
                     else -> JxdLogger.d(TAG, "未知 Notify: ${packet.characteristicUuid}")
                 }
             }
@@ -119,6 +145,7 @@ class DeviceRepository(private val bleManager: BleManager) {
      * 断开连接
      */
     fun disconnect() {
+        stopRealtimeCapture()
         bleManager.disconnect()
         _deviceState.value = DeviceState()
     }
@@ -159,6 +186,30 @@ class DeviceRepository(private val bleManager: BleManager) {
      */
     fun stopRecording() {
         sendCommand(YinLiFangProtocol.CMD_STOP_RECORD)
+    }
+
+    fun beginRealtimeCapture() {
+        val now = System.currentTimeMillis()
+        bytesInRateWindow = 0L
+        rateWindowStartMillis = now
+        _realtimeRecordingState.value = RealtimeRecordingState(
+            isCapturing = true,
+            startedAtMillis = now
+        )
+        JxdLogger.d(TAG, "准备接收实时录音")
+    }
+
+    fun stopRealtimeCapture(error: String? = null) {
+        closeRecordingFile()
+        bytesInRateWindow = 0L
+        rateWindowStartMillis = 0L
+        _realtimeRecordingState.update {
+            it.copy(
+                isCapturing = false,
+                bytesPerSecond = 0L,
+                lastError = error
+            )
+        }
     }
 
     /**
@@ -274,11 +325,13 @@ class DeviceRepository(private val bleManager: BleManager) {
             response.startsWith(YinLiFangProtocol.RSP_START_RECORD) -> {
                 val fileName = response.removePrefix(YinLiFangProtocol.RSP_START_RECORD)
                 _deviceState.update { it.copy(isRecording = true, recordingFileName = fileName) }
+                updateCaptureFileName(fileName)
             }
 
             // 停止录音响应
             response.startsWith(YinLiFangProtocol.RSP_STOP_RECORD) -> {
                 _deviceState.update { it.copy(isRecording = false, recordingFileName = "", recordingDuration = 0) }
+                stopRealtimeCapture()
             }
 
             // 录音过程中状态推送
@@ -391,6 +444,93 @@ class DeviceRepository(private val bleManager: BleManager) {
             val total = parts[3].toIntOrNull() ?: -1
             _deviceState.update { it.copy(freeStorage = free, totalStorage = total) }
         }
+    }
+
+    private fun handleAudioPacket(data: ByteArray) {
+        if (!_realtimeRecordingState.value.isCapturing) return
+
+        try {
+            ensureRecordingFile()
+            recordingOutputStream?.write(data)
+            recordingOutputStream?.flush()
+            updateAudioStats(data.size)
+        } catch (exception: IOException) {
+            JxdLogger.e(TAG, "写入实时录音失败", exception)
+            stopRealtimeCapture("保存音频失败: ${exception.message ?: "未知错误"}")
+        }
+    }
+
+    private fun ensureRecordingFile() {
+        if (recordingOutputStream != null) return
+
+        val current = _realtimeRecordingState.value
+        val fileName = sanitizeFileName(current.fileName.ifEmpty {
+            "realtime_${System.currentTimeMillis()}.mp3"
+        })
+        val file = File(recordingDirectory(), fileName.ensureMp3Suffix())
+        file.parentFile?.mkdirs()
+        recordingOutputStream = FileOutputStream(file, false)
+        _realtimeRecordingState.update { it.copy(localPath = file.absolutePath) }
+    }
+
+    private fun updateCaptureFileName(fileName: String) {
+        _realtimeRecordingState.update {
+            it.copy(
+                isCapturing = true,
+                fileName = fileName,
+                startedAtMillis = if (it.startedAtMillis == 0L) System.currentTimeMillis() else it.startedAtMillis
+            )
+        }
+    }
+
+    private fun updateAudioStats(packetSize: Int) {
+        val now = System.currentTimeMillis()
+        if (rateWindowStartMillis == 0L) {
+            rateWindowStartMillis = now
+        }
+        bytesInRateWindow += packetSize
+
+        val elapsed = now - rateWindowStartMillis
+        val currentRate = if (elapsed >= 1000L) {
+            val rate = bytesInRateWindow * 1000L / elapsed
+            bytesInRateWindow = 0L
+            rateWindowStartMillis = now
+            rate
+        } else {
+            _realtimeRecordingState.value.bytesPerSecond
+        }
+
+        _realtimeRecordingState.update {
+            it.copy(
+                totalBytes = it.totalBytes + packetSize,
+                lastPacketBytes = packetSize,
+                packetCount = it.packetCount + 1,
+                bytesPerSecond = currentRate
+            )
+        }
+    }
+
+    private fun closeRecordingFile() {
+        runCatching {
+            recordingOutputStream?.flush()
+            recordingOutputStream?.close()
+        }
+        recordingOutputStream = null
+    }
+
+    private fun recordingDirectory(): File {
+        val externalMusic = appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+        return File(externalMusic ?: appContext.filesDir, "yinlifang_recordings")
+    }
+
+    private fun sanitizeFileName(value: String): String {
+        return value.replace(Regex("""[\\/:*?"<>|]"""), "_").ifEmpty {
+            "realtime_${System.currentTimeMillis()}.mp3"
+        }
+    }
+
+    private fun String.ensureMp3Suffix(): String {
+        return if (endsWith(".mp3", ignoreCase = true)) this else "$this.mp3"
     }
 
     /**
