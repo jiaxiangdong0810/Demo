@@ -39,6 +39,7 @@ android {
 }
 
 dependencies {
+    implementation(files("libs/sherpa-onnx-1.13.3.aar"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)

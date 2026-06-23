@@ -8,6 +8,7 @@ import androidx.lifecycle.lifecycleScope
 import com.example.myapplication.databinding.ActivityRealtimeRecordingBinding
 import com.example.myapplication.repository.DeviceSession
 import com.example.myapplication.repository.RealtimeRecordingState
+import com.example.myapplication.repository.TranscriptionState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -45,11 +46,12 @@ class RealtimeRecordingActivity : AppCompatActivity() {
             repository.deviceState.collectLatest { state ->
                 binding.tvDeviceName.text = state.deviceName.ifEmpty { "音立方设备" }
                 binding.tvRecordingStatus.text = if (state.isRecording) "录音中" else "录音已停止"
-                binding.tvRecordingName.text = when {
-                    state.recordingFileName.isNotEmpty() -> state.recordingFileName
-                    state.isRecording -> "正在创建录音文件"
-                    else -> "录音文件已保存到下方路径"
+                binding.tvRecordingName.visibility = if (state.recordingFileName.isNotEmpty()) {
+                    View.VISIBLE
+                } else {
+                    View.GONE
                 }
+                binding.tvRecordingName.text = state.recordingFileName
                 binding.btnStopRecording.isEnabled = state.isRecording
             }
         }
@@ -75,6 +77,12 @@ class RealtimeRecordingActivity : AppCompatActivity() {
                 }
             }
         }
+
+        lifecycleScope.launch {
+            repository.transcriptionState.collectLatest { state ->
+                updateTranscriptionUi(state)
+            }
+        }
     }
 
     private fun updateRealtimeUi(state: RealtimeRecordingState) {
@@ -90,6 +98,22 @@ class RealtimeRecordingActivity : AppCompatActivity() {
         binding.tvReceiveRate.text = "${formatBytes(state.bytesPerSecond)}/s"
         binding.tvLocalPath.text = state.localPath.ifEmpty { "生成音频文件后显示保存位置" }
         binding.progressReceiving.visibility = if (state.isCapturing) View.VISIBLE else View.GONE
+    }
+
+    private fun updateTranscriptionUi(state: TranscriptionState) {
+        binding.tvTranscriptionStatus.text = when {
+            state.isTranscribing -> state.statusText
+            state.lastError != null -> state.lastError
+            else -> state.statusText
+        }
+        binding.progressTranscribing.visibility = if (state.isTranscribing) View.VISIBLE else View.GONE
+        binding.tvTranscriptionText.text = state.finalText.ifEmpty {
+            if (state.lastError != null) {
+                "放入 sherpa-onnx 模型和 native 库后，这里会显示本地转写结果。"
+            } else {
+                "暂无转写内容"
+            }
+        }
     }
 
     private fun startTimer() {

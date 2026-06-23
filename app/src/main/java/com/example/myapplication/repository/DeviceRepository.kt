@@ -3,6 +3,8 @@ package com.example.myapplication.repository
 import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Environment
+import com.example.myapplication.asr.SherpaOnnxTranscriber
+import com.example.myapplication.audio.Mp3FileDecoder
 import com.example.myapplication.ble.BleManager
 import com.example.myapplication.ble.ConnectionState
 import com.example.myapplication.protocol.YinLiFangProtocol
@@ -35,6 +37,8 @@ class DeviceRepository(
 
     companion object {
         private const val TAG = "DeviceRepository"
+        private const val TRANSCRIPTION_INTERVAL_MS = 5_000L
+        private const val MIN_TRANSCRIPTION_BYTES = 16 * 1024L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -46,6 +50,13 @@ class DeviceRepository(
     private var recordingOutputStream: FileOutputStream? = null
     private var bytesInRateWindow = 0L
     private var rateWindowStartMillis = 0L
+    private var lastTranscriptionAtMillis = 0L
+    private var lastTranscribedBytes = 0L
+    @Volatile
+    private var isTranscriptionRunning = false
+
+    private val mp3FileDecoder = Mp3FileDecoder()
+    private val transcriber = SherpaOnnxTranscriber(appContext)
 
     // ==================== 状态暴露 ====================
 
@@ -73,6 +84,11 @@ class DeviceRepository(
     private val _realtimeRecordingState = MutableStateFlow(RealtimeRecordingState())
     val realtimeRecordingState: StateFlow<RealtimeRecordingState> =
         _realtimeRecordingState.asStateFlow()
+
+    /** 本地语音转文字状态 */
+    private val _transcriptionState = MutableStateFlow(TranscriptionState())
+    val transcriptionState: StateFlow<TranscriptionState> =
+        _transcriptionState.asStateFlow()
 
     /** 扫描到的设备列表 */
     val scannedDevices = bleManager.scannedDevices
@@ -192,14 +208,23 @@ class DeviceRepository(
         val now = System.currentTimeMillis()
         bytesInRateWindow = 0L
         rateWindowStartMillis = now
+        lastTranscriptionAtMillis = 0L
+        lastTranscribedBytes = 0L
+        isTranscriptionRunning = false
         _realtimeRecordingState.value = RealtimeRecordingState(
             isCapturing = true,
             startedAtMillis = now
+        )
+        _transcriptionState.value = TranscriptionState(
+            isEnabled = true,
+            isModelReady = transcriber.isReady(),
+            statusText = transcriber.readinessError() ?: "等待音频"
         )
         JxdLogger.d(TAG, "准备接收实时录音")
     }
 
     fun stopRealtimeCapture(error: String? = null) {
+        val pathBeforeClose = _realtimeRecordingState.value.localPath
         closeRecordingFile()
         bytesInRateWindow = 0L
         rateWindowStartMillis = 0L
@@ -209,6 +234,9 @@ class DeviceRepository(
                 bytesPerSecond = 0L,
                 lastError = error
             )
+        }
+        if (error == null && pathBeforeClose.isNotEmpty()) {
+            requestTranscription(File(pathBeforeClose), finalPass = true)
         }
     }
 
@@ -454,6 +482,7 @@ class DeviceRepository(
             recordingOutputStream?.write(data)
             recordingOutputStream?.flush()
             updateAudioStats(data.size)
+            maybeRequestRealtimeTranscription()
         } catch (exception: IOException) {
             JxdLogger.e(TAG, "写入实时录音失败", exception)
             stopRealtimeCapture("保存音频失败: ${exception.message ?: "未知错误"}")
@@ -507,6 +536,95 @@ class DeviceRepository(
                 packetCount = it.packetCount + 1,
                 bytesPerSecond = currentRate
             )
+        }
+    }
+
+    private fun maybeRequestRealtimeTranscription() {
+        val state = _realtimeRecordingState.value
+        if (!state.isCapturing || state.localPath.isEmpty()) return
+        if (state.totalBytes < MIN_TRANSCRIPTION_BYTES) return
+
+        val now = System.currentTimeMillis()
+        val enoughTimePassed = now - lastTranscriptionAtMillis >= TRANSCRIPTION_INTERVAL_MS
+        val enoughNewBytes = state.totalBytes - lastTranscribedBytes >= MIN_TRANSCRIPTION_BYTES
+        if (!enoughTimePassed || !enoughNewBytes) return
+
+        requestTranscription(File(state.localPath), finalPass = false)
+    }
+
+    private fun requestTranscription(file: File, finalPass: Boolean) {
+        if (isTranscriptionRunning) return
+        if (!file.exists() || file.length() == 0L) return
+
+        isTranscriptionRunning = true
+        lastTranscriptionAtMillis = System.currentTimeMillis()
+        lastTranscribedBytes = _realtimeRecordingState.value.totalBytes
+        _transcriptionState.update {
+            it.copy(
+                isEnabled = true,
+                isModelReady = transcriber.isReady(),
+                isTranscribing = true,
+                statusText = if (finalPass) "正在生成最终文字" else "正在识别当前录音",
+                lastError = null
+            )
+        }
+
+        scope.launch {
+            try {
+                if (finalPass) {
+                    closeRecordingFile()
+                } else {
+                    recordingOutputStream?.flush()
+                }
+
+                val pcm = mp3FileDecoder.decode(file)
+                if (pcm.samples.isEmpty()) {
+                    _transcriptionState.update {
+                        it.copy(
+                            isTranscribing = false,
+                            statusText = "还没有可识别的音频"
+                        )
+                    }
+                    return@launch
+                }
+
+                val result = transcriber.transcribe(pcm)
+                result.fold(
+                    onSuccess = { text ->
+                        _transcriptionState.update {
+                            it.copy(
+                                isModelReady = true,
+                                isTranscribing = false,
+                                latestText = text,
+                                finalText = text.ifEmpty { it.finalText },
+                                statusText = if (text.isEmpty()) "暂未识别到文字" else "已更新转写内容",
+                                lastError = null
+                            )
+                        }
+                    },
+                    onFailure = { throwable ->
+                        _transcriptionState.update {
+                            it.copy(
+                                isModelReady = false,
+                                isTranscribing = false,
+                                statusText = "转写未就绪",
+                                lastError = throwable.message ?: "语音识别失败"
+                            )
+                        }
+                    }
+                )
+            } catch (exception: Exception) {
+                JxdLogger.e(TAG, "本地转写失败", exception)
+                _transcriptionState.update {
+                    it.copy(
+                        isTranscribing = false,
+                        statusText = "转写失败",
+                        lastError = exception.message ?: "未知错误"
+                    )
+                }
+            } finally {
+                isTranscriptionRunning = false
+            }
         }
     }
 
